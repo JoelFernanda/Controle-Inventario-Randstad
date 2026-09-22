@@ -10,6 +10,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 :root{--bg-soft:#f0f4f8;--card:#fff;--line:#e2e8f0;--txt:#070C20;--muted:#64748b;--brand:#2175D9;--brand-2:#1a5fb4;--brand-soft:#e8f2fc;--green:#10b981;--red:#ef4444;--amber:#f59e0b;--purple:#8b5cf6;--radius:14px;--shadow:0 2px 12px rgba(7,12,32,.05)}
@@ -332,17 +333,12 @@ button,input,select,table{font-family:'Poppins',system-ui,-apple-system,sans-ser
     <img class="login-logo" src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Randstad_logo.svg/512px-Randstad_logo.svg.png" alt="Randstad" onerror="this.replaceWith(Object.assign(document.createElement('div'),{textContent:'Randstad',style:'font-weight:800;font-size:20px;letter-spacing:.02em;color:#2175D9'}))">
     <h2>Inventário Cíclico</h2>
     <p>Entre com seu usuário e senha</p>
-    <div class="login-field"><label>Usuário</label><input type="text" id="loginUser" placeholder="Ex.: gestor, robson, roger, alexandre" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    <div class="login-field"><label>E-mail</label><input type="email" id="loginUser" placeholder="seu e-mail corporativo" autocomplete="username" autocapitalize="off" spellcheck="false"></div>
     <div class="login-field"><label>Senha</label><input type="password" id="loginPass" placeholder="Digite sua senha" autocomplete="off" onkeypress="if(event.key==='Enter')fazerLogin()"></div>
     <button class="login-btn" onclick="fazerLogin()">Entrar</button>
     <div id="loginErro" class="login-erro"></div>
     <div class="login-hint">
-      <b>Usuários disponíveis:</b><br>
-      • <b>gestor</b> — acesso completo<br>
-      • <b>robson</b> — inventário<br>
-      • <b>roger</b> — inventário<br>
-      • <b>alexandre</b> — inventário<br>
-      Senha padrão: <b>123456</b>
+      Use seu e-mail corporativo e a senha cadastrada no sistema.
     </div>
   </div>
 </div>
@@ -635,12 +631,10 @@ function enderecoCompleto(c){const i=CICLOS_INFO[c];if(!i)return"—";if(c===9)r
 const META_ACURACIA = 99.98;
 const MESES_POR_ANO = {2026:[9,10,11,12],2027:[1,2,3,4,5,6,7,8,9,10,11,12],2028:[1,2,3,4,5,6,7,8,9,10,11,12],2029:[1,2,3,4,5,6,7,8,9,10,11,12],2030:[1,2,3,4,5,6,7,8,9,10,11,12]};
 
-const USERS = {
-  gestor:    { senha: "123456", nome: "Gestor",    role: "gestor" },
-  robson:    { senha: "123456", nome: "Robson",    role: "operador" },
-  roger:     { senha: "123456", nome: "Roger",     role: "operador" },
-  alexandre: { senha: "123456", nome: "Alexandre", role: "operador" }
-};
+const SUPABASE_URL = "https://reczhnlrgkoqlgojbjxa.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_JByuATj4tQYajYJq5mowCw_v-jTgeaO";
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let realtimeChannel = null;
 
 const ITENS_TESTE_CICLO1 = [
   { codigo:"UN0001", descricao:"Camiseta P",   codigoBarras:"7891150049871", saldo:30 },
@@ -650,15 +644,13 @@ const ITENS_TESTE_CICLO1 = [
   { codigo:"UN0005", descricao:"Camiseta EXG", codigoBarras:"7896098902257", saldo:35 }
 ];
 
-let banco = JSON.parse(localStorage.getItem("inventarioApp_v23")) ||
-            JSON.parse(localStorage.getItem("inventarioApp_v22")) ||
-            JSON.parse(localStorage.getItem("inventarioApp_v21")) || {};
+let banco = {};
 let usuarioLogado = null;
 let dadosAtuais = [];
 let anoAtual = 2026, mesAtual = 9, cicloAtual = 1;
 let filtroBusca = "", tabAtual = "inventario", hideSaldo = false;
 let confIndex = null, cameraAtiva = false, codeReaderZX = null;
-const SENHA_GESTOR = "123456";
+const SENHA_GESTOR = null;
 let senhaCallback = null;
 const nomesMeses = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 const RESPONSAVEL_PADRAO = "Robson Takara / Joel Moreira";
@@ -712,40 +704,51 @@ function iniciarSplash() {
   }, 2000);
 }
 
-function fazerLogin() {
-  const userRaw = document.getElementById("loginUser").value.trim().toLowerCase();
-  const pass = document.getElementById("loginPass").value;
-  const erro = document.getElementById("loginErro");
-  erro.classList.remove("ativo");
-  if (!userRaw || !pass) { erro.textContent = "Preencha usuário e senha."; erro.classList.add("ativo"); return; }
-  const u = USERS[userRaw];
-  if (!u || u.senha !== pass) { erro.textContent = "Usuário ou senha inválidos."; erro.classList.add("ativo"); return; }
-  usuarioLogado = { login: userRaw, nome: u.nome, role: u.role };
-  sessionStorage.setItem("inventarioUser", JSON.stringify(usuarioLogado));
-  aplicarPermissoes();
+async function entrarNoApp(user){
+  const {data:perfil,error}=await supabaseClient.from("ri_profiles").select("full_name,role").eq("id",user.id).maybeSingle();
+  if(error || !perfil){
+    await supabaseClient.auth.signOut();
+    throw new Error("Perfil do usuário não encontrado.");
+  }
+  usuarioLogado={id:user.id,email:user.email,login:user.email,nome:perfil.full_name,role:perfil.role};
+  await carregarBancoRemoto();
+  document.getElementById("splashScreen").classList.add("hidden");
   document.getElementById("loginScreen").classList.add("hidden");
   document.getElementById("appMain").classList.remove("hidden");
-  document.getElementById("saudacaoTexto").textContent = `Olá, ${u.nome}`;
+  document.getElementById("saudacaoTexto").textContent=`Olá, ${perfil.full_name}`;
+  aplicarPermissoes();
   seedInicial();
+  await salvarBanco();
+  iniciarRealtime();
   abrirCiclo();
   mudarTab("inventario");
   atualizarDataHoraTopbar();
   clearInterval(relogioTimer);
-  relogioTimer = setInterval(atualizarDataHoraTopbar, 30000);
+  relogioTimer=setInterval(atualizarDataHoraTopbar,30000);
 }
 
-function fazerLogout() {
-  if (!confirm("Deseja sair do sistema?")) return;
-  sessionStorage.removeItem("inventarioUser");
-  usuarioLogado = null;
-  clearInterval(relogioTimer);
-  pararCamera();
+async function fazerLogin(){
+  const email=document.getElementById("loginUser").value.trim().toLowerCase();
+  const pass=document.getElementById("loginPass").value;
+  const erro=document.getElementById("loginErro");
+  erro.classList.remove("ativo");
+  if(!email || !pass){erro.textContent="Preencha e-mail e senha.";erro.classList.add("ativo");return}
+  const {data,error}=await supabaseClient.auth.signInWithPassword({email,password:pass});
+  if(error){erro.textContent="E-mail ou senha inválidos.";erro.classList.add("ativo");return}
+  try{await entrarNoApp(data.user)}catch(e){erro.textContent=e.message||"Não foi possível entrar.";erro.classList.add("ativo")}
+}
+
+async function fazerLogout(){
+  if(!confirm("Deseja sair do sistema?"))return;
+  await supabaseClient.auth.signOut();
+  if(realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
+  usuarioLogado=null; clearInterval(relogioTimer); pararCamera();
   document.getElementById("appMain").classList.add("hidden");
-  document.getElementById("loginUser").value = "";
-  document.getElementById("loginPass").value = "";
+  document.getElementById("loginUser").value="";
+  document.getElementById("loginPass").value="";
   document.getElementById("loginErro").classList.remove("ativo");
   document.getElementById("loginScreen").classList.remove("hidden");
-  setTimeout(() => document.getElementById("loginUser").focus(), 200);
+  setTimeout(()=>document.getElementById("loginUser").focus(),200);
 }
 
 function aplicarPermissoes() {
@@ -781,7 +784,35 @@ anoSelect.onchange=abrirCiclo;mesSelect.onchange=abrirCiclo;
 
 function chavePeriodo(){return anoAtual+"_"+mesAtual}
 function criarEstrutura(){const k=chavePeriodo();if(!banco[k])banco[k]={ano:anoAtual,mes:mesAtual,ciclos:{1:null,2:null,3:null,4:null},cadastroCiclos:null}}
-function salvarBanco(){localStorage.setItem("inventarioApp_v23",JSON.stringify(banco))}
+async function salvarBanco(){
+  if(!usuarioLogado?.id) return;
+  const {error}=await supabaseClient.from("ri_app_state").upsert({
+    id:"main", data:banco, updated_by:usuarioLogado.id, updated_at:new Date().toISOString()
+  });
+  if(error) console.error("Erro ao sincronizar inventário:",error);
+}
+
+async function carregarBancoRemoto(){
+  const {data,error}=await supabaseClient.from("ri_app_state").select("data").eq("id","main").maybeSingle();
+  if(error){console.error(error);return}
+  if(data?.data && typeof data.data === "object"){banco=data.data;return}
+  const local=JSON.parse(localStorage.getItem("inventarioApp_v23")||localStorage.getItem("inventarioApp_v22")||localStorage.getItem("inventarioApp_v21")||"null");
+  if(local && typeof local === "object"){banco=local;await salvarBanco();}
+}
+
+function iniciarRealtime(){
+  if(realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
+  realtimeChannel=supabaseClient.channel("ri-app-state")
+    .on("postgres_changes",{event:"*",schema:"public",table:"ri_app_state",filter:"id=eq.main"},payload=>{
+      if(payload.new?.data){
+        banco=payload.new.data;
+        abrirCiclo();
+        atualizarResumoMes();
+        atualizarCiclosUI();
+        invalidarCacheDashboard();
+      }
+    }).subscribe();
+}
 function numero(v){if(v===null||v===undefined||v==="")return 0;if(typeof v==="number")return v;let t=String(v).trim();if(t.includes(",")&&t.includes("."))t=t.replace(/\./g,"").replace(",",".");else t=t.replace(",",".");t=t.replace(/[^\d.-]/g,"");return parseFloat(t)||0}
 function formatar(n){return Number(n||0).toLocaleString("pt-BR",{maximumFractionDigits:2})}
 function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
@@ -1172,7 +1203,7 @@ function limparCiclo(){if(cicloAtual===9){alert("Selecione ciclo.");return}senha
 
 function abrirSenha(m){document.getElementById("senhaInfo").textContent=m;document.getElementById("senhaInput").value="";document.getElementById("senhaModal").classList.remove("hidden");setTimeout(()=>document.getElementById("senhaInput").focus(),100)}
 function fecharSenha(){document.getElementById("senhaModal").classList.add("hidden");senhaCallback=null}
-function validarSenha(){const v=document.getElementById("senhaInput").value;if(v===SENHA_GESTOR){const cb=senhaCallback;fecharSenha();if(cb)cb()}else{document.getElementById("senhaInfo").innerHTML="<b>Senha incorreta.</b>";document.getElementById("senhaInput").value="";document.getElementById("senhaInput").focus()}}
+function validarSenha(){if(usuarioLogado?.role!=="gestor"){document.getElementById("senhaInfo").innerHTML="<b>Apenas o gestor pode realizar esta ação.</b>";return}const cb=senhaCallback;fecharSenha();if(cb)cb()}
 
 function abrirAjustes(){
   if(cicloAtual===9){alert("Selecione ciclo.");return}if(!dadosAtuais.length){alert("Nada para ajustar.");return}
@@ -1281,26 +1312,10 @@ function renderDashboard(){
 }
 function msg(txt,tipo){const el=document.getElementById("msgBox");el.className="alert"+(tipo==="ok"?" ok":"");el.textContent=txt;setTimeout(()=>{el.textContent="";el.className=""},4000)}
 
-(function init(){
-  const sess = sessionStorage.getItem("inventarioUser");
-  if (sess) {
-    try {
-      usuarioLogado = JSON.parse(sess);
-      document.getElementById("splashScreen").classList.add("hidden");
-      document.getElementById("loginScreen").classList.add("hidden");
-      document.getElementById("appMain").classList.remove("hidden");
-      document.getElementById("saudacaoTexto").textContent = `Olá, ${usuarioLogado.nome}`;
-      aplicarPermissoes();
-      seedInicial();
-      abrirCiclo();
-      mudarTab("inventario");
-      atualizarDataHoraTopbar();
-      clearInterval(relogioTimer);
-      relogioTimer = setInterval(atualizarDataHoraTopbar, 30000);
-      return;
-    } catch(e) {}
-  }
-  iniciarSplash();
+(async function init(){
+  const {data:{session}}=await supabaseClient.auth.getSession();
+  if(session?.user){try{await entrarNoApp(session.user)}catch(e){iniciarSplash()}}
+  else iniciarSplash();
 })();
 </script>
 </body>
