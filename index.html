@@ -11,6 +11,7 @@
 <script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>if("serviceWorker" in navigator){window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(()=>{}))}</script>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 :root{--bg-soft:#f0f4f8;--card:#fff;--line:#e2e8f0;--txt:#070C20;--muted:#64748b;--brand:#2175D9;--brand-2:#1a5fb4;--brand-soft:#e8f2fc;--green:#10b981;--red:#ef4444;--amber:#f59e0b;--purple:#8b5cf6;--radius:14px;--shadow:0 2px 12px rgba(7,12,32,.05)}
@@ -44,7 +45,7 @@ button,input,select,table{font-family:'Poppins',system-ui,-apple-system,sans-ser
 .login-field input{width:100%;padding:14px;border:2px solid var(--line);border-radius:12px;font-size:15px;outline:none;background:#f9fafb;transition:.2s;font-weight:600}
 .login-field input:focus{border-color:var(--brand);background:#fff;box-shadow:0 0 0 4px rgba(33,117,217,.12)}
 .login-btn{width:100%;padding:15px;background:linear-gradient(135deg,#2175D9,#1a5fb4);color:#fff;border:0;border-radius:12px;font-weight:800;font-size:14px;cursor:pointer;margin-top:8px;transition:.15s;box-shadow:0 8px 20px rgba(33,117,217,.3)}
-.login-btn:active{transform:scale(.98)}
+.login-btn:active{transform:scale(.98)} .login-forgot{margin-top:12px;border:0;background:transparent;color:var(--brand);font-size:12px;font-weight:700;cursor:pointer}
 .login-erro{color:#991b1b;background:#fef2f2;border:1px solid #fecaca;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:600;margin-top:14px;text-align:center;display:none}
 .login-erro.ativo{display:block}
 .login-hint{margin-top:18px;padding-top:16px;border-top:1px solid var(--line);font-size:10.5px;color:var(--muted);line-height:1.6;text-align:left;font-weight:500}
@@ -336,10 +337,22 @@ button,input,select,table{font-family:'Poppins',system-ui,-apple-system,sans-ser
     <div class="login-field"><label>E-mail</label><input type="email" id="loginUser" placeholder="seu e-mail corporativo" autocomplete="username" autocapitalize="off" spellcheck="false"></div>
     <div class="login-field"><label>Senha</label><input type="password" id="loginPass" placeholder="Digite sua senha" autocomplete="off" onkeypress="if(event.key==='Enter')fazerLogin()"></div>
     <button class="login-btn" onclick="fazerLogin()">Entrar</button>
+     <button type="button" class="login-forgot" onclick="solicitarRecuperacao()">Esqueci minha senha</button>
     <div id="loginErro" class="login-erro"></div>
     <div class="login-hint">
       Use seu e-mail corporativo e a senha cadastrada no sistema.
     </div>
+  </div>
+</div>
+
+<div id="resetScreen" class="login-screen hidden">
+  <div class="login-box">
+    <h2>Nova senha</h2>
+    <p>Digite uma nova senha para acessar o inventário.</p>
+    <div class="login-field"><label>Nova senha</label><input type="password" id="newPass" autocomplete="new-password"></div>
+    <div class="login-field"><label>Confirmar senha</label><input type="password" id="newPass2" autocomplete="new-password"></div>
+    <button class="login-btn" onclick="confirmarNovaSenha()">Salvar nova senha</button>
+    <div id="resetErro" class="login-erro"></div>
   </div>
 </div>
 
@@ -634,6 +647,7 @@ const MESES_POR_ANO = {2026:[9,10,11,12],2027:[1,2,3,4,5,6,7,8,9,10,11,12],2028:
 const SUPABASE_URL = "https://reczhnlrgkoqlgojbjxa.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_JByuATj4tQYajYJq5mowCw_v-jTgeaO";
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+supabaseClient.auth.onAuthStateChange((event)=>{if(event==="PASSWORD_RECOVERY")mostrarRedefinicao()});
 let realtimeChannel = null;
 
 const ITENS_TESTE_CICLO1 = [
@@ -725,6 +739,39 @@ async function entrarNoApp(user){
   atualizarDataHoraTopbar();
   clearInterval(relogioTimer);
   relogioTimer=setInterval(atualizarDataHoraTopbar,30000);
+}
+
+function mostrarRedefinicao(){
+  document.getElementById("splashScreen").classList.add("hidden");
+  document.getElementById("loginScreen").classList.add("hidden");
+  document.getElementById("appMain").classList.add("hidden");
+  document.getElementById("resetScreen").classList.remove("hidden");
+}
+
+async function solicitarRecuperacao(){
+  const email=document.getElementById("loginUser").value.trim().toLowerCase();
+  const erro=document.getElementById("loginErro");
+  erro.classList.remove("ativo");
+  if(!email){erro.textContent="Digite seu e-mail primeiro.";erro.classList.add("ativo");return}
+  const redirectTo=window.location.origin+window.location.pathname;
+  const {error}=await supabaseClient.auth.resetPasswordForEmail(email,{redirectTo});
+  if(error){erro.textContent="Não foi possível enviar o e-mail.";erro.classList.add("ativo");return}
+  erro.textContent="E-mail de recuperação enviado.";erro.classList.add("ativo");
+}
+
+async function confirmarNovaSenha(){
+  const a=document.getElementById("newPass").value;
+  const b=document.getElementById("newPass2").value;
+  const erro=document.getElementById("resetErro");
+  erro.classList.remove("ativo");
+  if(a.length<6){erro.textContent="Use pelo menos 6 caracteres.";erro.classList.add("ativo");return}
+  if(a!==b){erro.textContent="As senhas não são iguais.";erro.classList.add("ativo");return}
+  const {error}=await supabaseClient.auth.updateUser({password:a});
+  if(error){erro.textContent="Não foi possível salvar a senha.";erro.classList.add("ativo");return}
+  await supabaseClient.auth.signOut();
+  document.getElementById("resetScreen").classList.add("hidden");
+  document.getElementById("loginScreen").classList.remove("hidden");
+  alert("Senha alterada. Entre com a nova senha.");
 }
 
 async function fazerLogin(){
