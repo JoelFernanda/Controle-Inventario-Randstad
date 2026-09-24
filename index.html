@@ -6,7 +6,7 @@
 <title>Inventário Cíclico · Randstad</title>
 <link rel="manifest" href="./manifest.webmanifest">
 <meta name="theme-color" content="#2175D9">
-<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<link rel="apple-touch-icon" href="./apple-touch-icon-rocket.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -667,6 +667,7 @@ let dadosAtuais = [];
 let anoAtual = 2026, mesAtual = 9, cicloAtual = 1;
 let filtroBusca = "", tabAtual = "inventario", hideSaldo = false;
 let confIndex = null, cameraAtiva = false, codeReaderZX = null;
+let nativeBarcodeDetector = null, nativeScanTimer = null, nativeScanBusy = false, nativeCameraStream = null;
 const SENHA_GESTOR = null;
 let senhaCallback = null;
 const nomesMeses = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
@@ -1059,11 +1060,11 @@ function abrirConferencia(index){
   setTimeout(()=>{if(!it._confirmadoBarras)campo.focus();else qtd.focus()},200);
 }
 function fecharConf(){pararCamera();document.getElementById("confModal").classList.add("hidden");confIndex=null}
-function campoBarrasOk(){if(confIndex===null)return false;const it=dadosAtuais[confIndex];const campo=document.getElementById("campoBarras");const esp=String(it.codigoBarras||"").trim();return esp&&campo.value.trim()===esp}
+function campoBarrasOk(){if(confIndex===null)return false;const it=dadosAtuais[confIndex];const campo=document.getElementById("campoBarras");const esp=normalizarCodigoBarras(it.codigoBarras||"");return !!esp&&normalizarCodigoBarras(campo.value)===esp}
 function validarBarras(){
   if(confIndex===null)return;
   const it=dadosAtuais[confIndex];const campo=document.getElementById("campoBarras"),fb=document.getElementById("feedbackBarras"),qtdBloco=document.getElementById("qtdBloco"),btnOk=document.getElementById("btnOk");
-  const lido=campo.value.trim(),esp=String(it.codigoBarras||"").trim();
+  const lido=normalizarCodigoBarras(campo.value),esp=normalizarCodigoBarras(it.codigoBarras||"");
   if(!lido){campo.className="campo";fb.className="fb neutral";fb.textContent=esp?"Aguardando leitura do código...":"Este produto não possui código de barras cadastrado.";qtdBloco.classList.add("bloqueado");btnOk.disabled=true;return}
   if(!esp){campo.className="campo";fb.className="fb neutral";fb.textContent="Este produto não possui código de barras cadastrado.";qtdBloco.classList.add("bloqueado");btnOk.disabled=true;return}
   if(lido===esp){campo.className="campo valido";fb.className="fb ok";fb.textContent="✓ Código válido — produto conferido";qtdBloco.classList.remove("bloqueado");btnOk.disabled=false;setTimeout(()=>document.getElementById("campoQtd").focus(),100);return}
@@ -1083,6 +1084,29 @@ function confirmarContagem(){
 }
 
 async function toggleCamera(){if(cameraAtiva)pararCamera();else await iniciarCamera()}
+function receberCodigoLido(texto){
+  if(!texto||!cameraAtiva)return;
+  const campo=document.getElementById("campoBarras");
+  campo.value=normalizarCodigoBarras(texto);
+  validarBarras();
+  if(campoBarrasOk()){
+    pararCamera();
+    if(navigator.vibrate)navigator.vibrate(80);
+  }
+}
+async function varrerFrameNativo(){
+  if(!cameraAtiva||!nativeBarcodeDetector)return;
+  const video=document.getElementById("videoEl");
+  if(!nativeScanBusy&&video&&video.readyState>=2){
+    nativeScanBusy=true;
+    try{
+      const resultados=await nativeBarcodeDetector.detect(video);
+      if(resultados&&resultados.length)receberCodigoLido(resultados[0].rawValue);
+    }catch(err){}
+    finally{nativeScanBusy=false}
+  }
+  if(cameraAtiva&&nativeBarcodeDetector)nativeScanTimer=setTimeout(varrerFrameNativo,140);
+}
 async function iniciarCamera(){
   const cam=document.getElementById("camMini"),video=document.getElementById("videoEl"),btn=document.getElementById("btnCameraDestaque"),btnLabel=document.getElementById("btnCameraLabel"),fb=document.getElementById("feedbackBarras");
   const isSecure=location.protocol==="https:"||location.hostname==="localhost"||location.hostname==="127.0.0.1";
@@ -1091,25 +1115,47 @@ async function iniciarCamera(){
   btn.classList.add("ativo");btnLabel.textContent="Ligando a câmera...";cam.classList.add("ativa");
   fb.className="fb neutral";fb.textContent="Aguardando permissão da câmera...";
   try{
-    codeReaderZX=new ZXing.BrowserMultiFormatReader();
+    if("BarcodeDetector" in window){
+      try{
+        nativeBarcodeDetector=new BarcodeDetector();
+        nativeCameraStream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30}}});
+        video.srcObject=nativeCameraStream;
+        await video.play();
+        cameraAtiva=true;
+        const track=nativeCameraStream.getVideoTracks()[0];
+        if(track&&track.applyConstraints){try{await track.applyConstraints({advanced:[{focusMode:"continuous"},{exposureMode:"continuous"}]})}catch(e){}}
+        btnLabel.textContent="Desligar câmera";
+        fb.className="fb neutral";fb.textContent="Aponte a câmera traseira para o código de barras e mantenha firme.";
+        varrerFrameNativo();
+        return;
+      }catch(nativeErr){
+        console.warn("Leitor nativo indisponível; usando leitor alternativo.",nativeErr);
+        if(nativeCameraStream){nativeCameraStream.getTracks().forEach(t=>t.stop());nativeCameraStream=null}
+        if(video.srcObject){video.srcObject=null}
+        nativeBarcodeDetector=null;
+        cameraAtiva=false;
+      }
+    }
+    const hints=new Map();
+    hints.set(ZXing.DecodeHintType.TRY_HARDER,true);
+    const formats=[ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.EAN_8,ZXing.BarcodeFormat.UPC_A,ZXing.BarcodeFormat.UPC_E,ZXing.BarcodeFormat.CODE_128,ZXing.BarcodeFormat.CODE_39,ZXing.BarcodeFormat.CODE_93,ZXing.BarcodeFormat.ITF,ZXing.BarcodeFormat.CODABAR,ZXing.BarcodeFormat.RSS_14,ZXing.BarcodeFormat.RSS_EXPANDED,ZXing.BarcodeFormat.QR_CODE,ZXing.BarcodeFormat.DATA_MATRIX,ZXing.BarcodeFormat.PDF_417,ZXing.BarcodeFormat.AZTEC].filter(Boolean);
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,formats);
+    codeReaderZX=new ZXing.BrowserMultiFormatReader(hints,250);
     cameraAtiva=true;
     await codeReaderZX.decodeFromConstraints(
-      {video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}}},
+      {video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30}}},
       video,
-      (result,err)=>{
-        if(result&&result.text&&cameraAtiva){
-          const campo=document.getElementById("campoBarras");
-          campo.value=result.text;
-          validarBarras();
-          if(campoBarrasOk()){pararCamera();if(navigator.vibrate)navigator.vibrate(80)}
-        }
-      }
+      (result,err)=>{if(result&&result.text&&cameraAtiva)receberCodigoLido(result.text)}
     );
+    const track=video.srcObject?.getVideoTracks?.()[0];
+    if(track&&track.applyConstraints){try{await track.applyConstraints({advanced:[{focusMode:"continuous"},{exposureMode:"continuous"}]})}catch(e){}}
     btnLabel.textContent="Desligar câmera";
-    fb.className="fb neutral";fb.textContent="Aponte para o código de barras...";
+    fb.className="fb neutral";fb.textContent="Aponte a câmera traseira para o código de barras e mantenha firme.";
   }catch(err){
     console.error("Erro na câmera:",err);
-    cameraAtiva=false;btn.classList.remove("ativo");btnLabel.textContent="Ler com a câmera";cam.classList.remove("ativa");
+    cameraAtiva=false;
+    if(nativeCameraStream){nativeCameraStream.getTracks().forEach(t=>t.stop());nativeCameraStream=null}
+    btn.classList.remove("ativo");btnLabel.textContent="Ler com a câmera";cam.classList.remove("ativa");
     fb.className="fb err";
     let m="Não foi possível acessar a câmera. ";
     if(err.name==="NotAllowedError")m+="Permissão negada — libere o acesso nas configurações.";
@@ -1121,11 +1167,14 @@ async function iniciarCamera(){
   }
 }
 function pararCamera(){
+  cameraAtiva=false;
+  if(nativeScanTimer){clearTimeout(nativeScanTimer);nativeScanTimer=null}
+  nativeScanBusy=false;nativeBarcodeDetector=null;
   if(codeReaderZX){try{codeReaderZX.reset()}catch(e){}codeReaderZX=null}
   const cam=document.getElementById("camMini"),btn=document.getElementById("btnCameraDestaque"),btnLabel=document.getElementById("btnCameraLabel"),video=document.getElementById("videoEl");
+  if(nativeCameraStream){try{nativeCameraStream.getTracks().forEach(t=>t.stop())}catch(e){}nativeCameraStream=null}
   if(video&&video.srcObject){try{video.srcObject.getTracks().forEach(t=>t.stop());video.srcObject=null}catch(e){}}
   if(cam)cam.classList.remove("ativa");if(btn)btn.classList.remove("ativo");if(btnLabel)btnLabel.textContent="Ler com a câmera";
-  cameraAtiva=false;
 }
 
 function atualizarMetricas(){
